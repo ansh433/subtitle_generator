@@ -1,0 +1,16 @@
+# ./api-server/Dockerfile.dev and ./worker/Dockerfile.dev
+
+# Use a modern Node.js version
+FROM node:20-alpine
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+COPY nodemon.json ./
+
+# Install all dependencies (including devDependencies)
+RUN npm install
+
+# The command is provided by docker-compose.yml and the code by the volume.

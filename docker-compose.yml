@@ -1,0 +1,38 @@
+services:
+  api-server:
+    build:
+      context: ./api-server
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./api-server/src:/app/src
+    environment:
+      - REDIS_URL=redis://redis:6379
+    command: npm run dev
+
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./worker/src:/app/src
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+    command: npm run dev
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend/src:/app/src
+
+  redis:
+    image: "redis:7-alpine"
+    ports:
+      - "6379:6379"
