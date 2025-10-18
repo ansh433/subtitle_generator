@@ -1,35 +1,75 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+// frontend/src/App.tsx
+
+import { useState } from 'react';
+import axios from 'axios';
+import './App.css';
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string>('');
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files) {
+      setSelectedFile(event.target.files[0]);
+    }
+  };
+
+  const handleUpload = async () => {
+    if (!selectedFile) {
+      setStatusMessage('Please select a file first.');
+      return;
+    }
+
+    setStatusMessage('1/3: Getting secure upload URL...');
+    setJobId(null);
+
+    try {
+      const urlResponse = await axios.post('http://localhost:3000/jobs/signed-url', {
+        fileName: selectedFile.name,
+        fileType: selectedFile.type,
+      });
+      const { preSignedUrl, key } = urlResponse.data;
+
+      setStatusMessage('2/3: Uploading video directly to cloud storage...');
+
+      await axios.put(preSignedUrl, selectedFile, {
+        headers: { 'Content-Type': selectedFile.type },
+      });
+
+      setStatusMessage('3/3: Video uploaded! Creating processing job...');
+
+      const jobResponse = await axios.post('http://localhost:3000/jobs', {
+        videoUrl: key,
+      });
+
+      setJobId(jobResponse.data.jobId);
+      setStatusMessage('Job created successfully!');
+    } catch (error) {
+      console.error('Error during upload process:', error);
+      setStatusMessage('Upload process failed. See console for details.');
+    }
+  };
 
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
+    <div className="App">
+      <header className="App-header">
+        <h1>Upload Video for Subtitles</h1>
+        <input type="file" onChange={handleFileChange} />
+        <button onClick={handleUpload} disabled={!selectedFile}>
+          Generate Subtitles
         </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
-  )
+
+        {statusMessage && <p>{statusMessage}</p>}
+        {jobId && (
+          <div className="job-id-container">
+            <p>Your Job ID is:</p>
+            <code>{jobId}</code>
+          </div>
+        )}
+      </header>
+    </div>
+  );
 }
 
-export default App
+export default App;

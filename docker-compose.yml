@@ -1,3 +1,5 @@
+version: '3.9'
+
 services:
   api-server:
     build:
@@ -9,6 +11,10 @@ services:
       - ./api-server/src:/app/src
     environment:
       - REDIS_URL=redis://redis:6379
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - AWS_REGION=${AWS_REGION}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
     command: npm run dev
 
   worker:
@@ -19,6 +25,10 @@ services:
       - ./worker/src:/app/src
     environment:
       - REDIS_URL=redis://redis:6379
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - AWS_REGION=${AWS_REGION}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
     depends_on:
       - redis
     command: npm run dev

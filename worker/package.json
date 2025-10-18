@@ -1,9 +1,7 @@
-
-
 {
   "name": "worker",
   "version": "1.0.0",
-  "type": "module", 
+  "type": "module",
   "main": "index.js",
   "scripts": {
     "build": "tsc",
@@ -20,6 +18,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.913.0",
     "redis": "^5.8.3"
   }
 }
