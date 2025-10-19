@@ -44,7 +44,19 @@ services:
     volumes:
       - ./frontend/src:/app/src
 
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile.dev
+    ports:
+      - "4001:4001"
+    volumes:
+      - ./dashboard/src:/app/src
+    environment:
+      - REDIS_URL=redis://redis:6379
+    command: npm run dev
+
   redis:
-    image: "redis:7-alpine"
+    image: redis:7-alpine
     ports:
       - "6379:6379"
