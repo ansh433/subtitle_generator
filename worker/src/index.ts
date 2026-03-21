@@ -1,5 +1,3 @@
-// worker/src/index.ts
-
 import { createClient } from 'redis';
 import { S3Client } from '@aws-sdk/client-s3';
 
@@ -9,7 +7,6 @@ import { IAudioService, FfmpegAudioService } from './services/audio.service.js';
 import { ProcessorFactory } from './processors/processor.factory.js';
 import { JobData } from './interfaces/job-processor.interface.js';
 
-// Service implementations
 import { S3StorageService } from './services/storage/s3-storage.service.js';
 import { RedisStateService } from './services/state/redis-state.service.js';
 import { NodeFileSystemService } from './services/filesystem/node-filesystem.service.js';
@@ -67,6 +64,9 @@ const s3Client = new S3Client({
 const S3_BUCKET = process.env.S3_BUCKET_NAME!;
 if (!S3_BUCKET) throw new Error('S3_BUCKET_NAME is not set.');
 
+
+let currentJobId: string | null = null;
+
 const processJob = async (
   jobId: string,
   processorFactory: ProcessorFactory,
@@ -77,7 +77,7 @@ const processJob = async (
     console.log(`[${jobId}] Adding to processing set.`);
     await redisClient.sAdd('jobs:processing', jobId);
 
-    // Fetch job data
+
     const jobDataRaw = await redisClient.hGetAll(`job:${jobId}`);
     const jobData: JobData = {
       jobId: jobDataRaw.id,
@@ -98,17 +98,17 @@ const processJob = async (
 
     console.log(`[${jobId}] Processing job of type: ${jobData.type}`);
 
-    // Get the appropriate processor
+    
     const processor = processorFactory.getProcessor(jobData.type);
 
-    // Acquire AI lock before processing
+   
     console.log(`[${jobId}] Acquiring AI lock.`);
     await aiLimiter.acquire();
     console.log(`[${jobId}] AI lock acquired. Processing...`);
 
     let outputUrl: string;
     try {
-      // Process the job
+      
       outputUrl = await processor.process(jobData);
       console.log(`[${jobId}] Processing finished. Output: ${outputUrl}`);
     } finally {
@@ -116,8 +116,12 @@ const processJob = async (
       console.log(`[${jobId}] AI lock released.`);
     }
 
-    // Mark as completed
+
     await stateService.updateStatus(jobId, 'completed');
+    
+    
+    await redisClient.lRem('queue:processing', 1, jobId);
+    
     console.log(`[${jobId}] Job fully completed!`);
     
   } catch (err) {
@@ -135,7 +139,10 @@ const processJob = async (
       await stateService.updateStatus(jobId, 'queued:retry');
       await redisClient.hSet(`job:${jobId}`, 'error', errorMessage);
 
-      // Schedule retry
+      
+      await redisClient.lRem('queue:processing', 1, jobId);
+
+      
       setTimeout(async () => {
         try {
           await redisClient.lPush('queue:low', jobId);
@@ -151,6 +158,9 @@ const processJob = async (
 
       await stateService.updateStatus(jobId, 'failed:dlq');
       await redisClient.hSet(`job:${jobId}`, 'error', errorMessage);
+      
+      
+      await redisClient.lRem('queue:processing', 1, jobId);
       await redisClient.rPush('queue:dlq', jobId);
     }
   } finally {
@@ -158,6 +168,66 @@ const processJob = async (
     await redisClient.sRem('jobs:processing', jobId);
   }
 };
+
+
+const recoverStalledJobs = async () => {
+  console.log('[Worker] Checking for stalled jobs in processing queue...');
+  
+  const stalledJobs = await redisClient.lRange('queue:processing', 0, -1);
+  
+  if (stalledJobs.length === 0) {
+    console.log('[Worker] No stalled jobs found.');
+    return;
+  }
+  
+  console.log(`[Worker] Found ${stalledJobs.length} stalled job(s), re-queuing...`);
+  
+  for (const jobId of stalledJobs) {
+    
+    await redisClient.lPush('queue:low', jobId);
+    await redisClient.lRem('queue:processing', 1, jobId);
+    
+    
+    await redisClient.hSet(`job:${jobId}`, 'status', 'queued:recovered');
+    
+    console.log(`[Worker]  Re-queued stalled job: ${jobId}`);
+  }
+};
+
+
+const gracefulShutdown = async () => {
+  console.log('[Worker] SIGTERM/SIGINT received, shutting down gracefully...');
+  
+  if (currentJobId) {
+    console.log(`[Worker] Returning current job ${currentJobId} to queue...`);
+    
+    try {
+      
+      await redisClient.lRem('queue:processing', 1, currentJobId);
+      await redisClient.lPush('queue:low', currentJobId);
+      await redisClient.sRem('jobs:processing', currentJobId);
+      await redisClient.hSet(`job:${currentJobId}`, 'status', 'queued:interrupted');
+      
+      console.log(`[Worker] ✅ Job ${currentJobId} returned to queue.`);
+    } catch (err) {
+      console.error(`[Worker] ❌ Failed to return job to queue:`, err);
+    }
+  }
+  
+  try {
+    await redisClient.quit();
+    console.log('[Worker] Redis connection closed.');
+  } catch (err) {
+    console.error('[Worker] Error closing Redis:', err);
+  }
+  
+  console.log('[Worker] Graceful shutdown complete. Exiting.');
+  process.exit(0);
+};
+
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
 
 const startWorker = async () => {
   await redisClient.connect();
@@ -174,7 +244,6 @@ const startWorker = async () => {
   );
   await Promise.all([globalLimiter.initialize(), aiLimiter.initialize()]);
 
-  // Instantiate service implementations
   const storageService = new S3StorageService(s3Client, S3_BUCKET);
   const stateService = new RedisStateService(redisClient);
   const fileSystemService = new NodeFileSystemService();
@@ -184,7 +253,7 @@ const startWorker = async () => {
     S3_BUCKET
   );
 
-  // Initialize processor factory with all services
+  
   const processorFactory = new ProcessorFactory(
     storageService,
     stateService,
@@ -193,6 +262,9 @@ const startWorker = async () => {
     transcriptionService
   );
 
+  
+  await recoverStalledJobs();
+
   console.log('✅ Worker connected to Redis, waiting for jobs...');
 
   while (true) {
@@ -200,17 +272,36 @@ const startWorker = async () => {
       await globalLimiter.acquire();
       console.log('[Worker] Global slot acquired. Waiting for job from queue...');
 
-      const result = await redisClient.brPop(['queue:high', 'queue:low'], 0);
+      
+      let jobId = await redisClient.blMove(
+        'queue:high',
+        'queue:processing',
+        'RIGHT',
+        'LEFT',
+        5 
+      );
 
-      if (result) {
-        const jobId = result.element;
+      
+      if (!jobId) {
+        jobId = await redisClient.blMove(
+          'queue:low',
+          'queue:processing',
+          'RIGHT',
+          'LEFT',
+          0  
+        );
+      }
+
+      if (jobId) {
         console.log(`[Worker] Found job ${jobId}, starting processing...`);
+        currentJobId = jobId;  
 
         try {
           await processJob(jobId, processorFactory, stateService, aiLimiter);
         } catch (err) {
           console.error(`[${jobId}] Unhandled error in processJob:`, err);
         } finally {
+          currentJobId = null;  
           await globalLimiter.release();
           console.log(`[Worker] Global slot released for job ${jobId}.`);
         }

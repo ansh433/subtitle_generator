@@ -1,4 +1,4 @@
-version: '3.9'
+
 
 services:
   api-server:
@@ -60,3 +60,9 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    volumes:
+      - redis-data:/data  
+    command: redis-server --appendonly yes --save 60 1
+
+volumes:
+  redis-data:

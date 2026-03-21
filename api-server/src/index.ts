@@ -1,10 +1,8 @@
-// api-server/src/index.ts
-
 import express from 'express';
 import { createClient } from 'redis';
 import { randomUUID } from 'crypto';
 import cors from 'cors';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 const app = express();
@@ -87,6 +85,71 @@ app.post('/jobs', async (req, res) => {
   } catch (error) {
     console.error('Failed to create job:', error);
     res.status(500).send({ message: 'Server error while creating job.' });
+  }
+});
+
+app.get('/jobs/:jobId', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    
+    const jobData = await redisClient.hGetAll(`job:${jobId}`);
+    
+    if (!jobData.id) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+    
+    res.json({
+      id: jobData.id,
+      type: jobData.type,
+      videoUrl: jobData.videoUrl,
+      audioUrl: jobData.audioUrl || null,
+      subtitleUrl: jobData.subtitleUrl || null,
+      status: jobData.status,
+      priority: jobData.priority,
+      createdAt: jobData.createdAt,
+      retryCount: parseInt(jobData.retryCount || '0'),
+      error: jobData.error || null,
+    });
+  } catch (error) {
+    console.error('Error fetching job:', error);
+    res.status(500).json({ error: 'Failed to fetch job' });
+  }
+});
+
+app.get('/jobs/:jobId/subtitle', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    
+    const jobData = await redisClient.hGetAll(`job:${jobId}`);
+    
+    if (!jobData.id) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+    
+    if (jobData.status !== 'completed') {
+      return res.status(400).json({ 
+        error: 'Job not completed yet',
+        status: jobData.status 
+      });
+    }
+    
+    if (!jobData.subtitleUrl) {
+      return res.status(404).json({ error: 'Subtitle file not found' });
+    }
+    
+    const getCommand = new GetObjectCommand({
+      Bucket: process.env.S3_BUCKET_NAME,
+      Key: jobData.subtitleUrl,
+    });
+    
+    const downloadUrl = await getSignedUrl(s3Client, getCommand, { 
+      expiresIn: 3600 
+    });
+    
+    res.json({ downloadUrl });
+  } catch (error) {
+    console.error('Error generating download URL:', error);
+    res.status(500).json({ error: 'Failed to generate download URL' });
   }
 });
 
