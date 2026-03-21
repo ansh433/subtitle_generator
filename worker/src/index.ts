@@ -1,12 +1,18 @@
-import { createClient } from 'redis';
-import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
-import { promises as fs, createWriteStream } from 'fs';
-import { pipeline } from 'stream/promises';
-import path from 'path';
+// worker/src/index.ts
 
-import { ITranscriptionService, TranscriptSegment } from './services/transcription.service.js';
+import { createClient } from 'redis';
+import { S3Client } from '@aws-sdk/client-s3';
+
+import { ITranscriptionService } from './services/transcription.service.js';
 import { getTranscriptionService } from './services/transcription.factory.js';
 import { IAudioService, FfmpegAudioService } from './services/audio.service.js';
+import { ProcessorFactory } from './processors/processor.factory.js';
+import { JobData } from './interfaces/job-processor.interface.js';
+
+// Service implementations
+import { S3StorageService } from './services/storage/s3-storage.service.js';
+import { RedisStateService } from './services/state/redis-state.service.js';
+import { NodeFileSystemService } from './services/filesystem/node-filesystem.service.js';
 
 const MAX_RETRIES = 3;
 const INITIAL_BACKOFF_MS = 2000;
@@ -61,132 +67,61 @@ const s3Client = new S3Client({
 const S3_BUCKET = process.env.S3_BUCKET_NAME!;
 if (!S3_BUCKET) throw new Error('S3_BUCKET_NAME is not set.');
 
-const formatToSrt = (transcript: TranscriptSegment[]): string => {
-  const toTimestamp = (ms: number) =>
-    new Date(ms).toISOString().substr(11, 12);
-  return transcript
-    .map(
-      (entry, index) =>
-        `${index + 1}\n${toTimestamp(entry.start)} --> ${toTimestamp(
-          entry.end
-        )}\n${entry.text}\n`
-    )
-    .join('\n');
-};
-
 const processJob = async (
   jobId: string,
-  audioService: IAudioService,
-  transcriptionService: ITranscriptionService,
+  processorFactory: ProcessorFactory,
+  stateService: RedisStateService,
   aiLimiter: ConcurrencyManager
 ) => {
-  const tempDir = path.join('/tmp', jobId);
-  let tempVideoPath = '';
-  let tempAudioPath = '';
-  let tempSrtPath = '';
-  let shouldRetry = false;
-  let errorMessage = '';
-
   try {
     console.log(`[${jobId}] Adding to processing set.`);
     await redisClient.sAdd('jobs:processing', jobId);
 
-    console.log(`[${jobId}] Creating temp directory.`);
-    await fs.mkdir(tempDir, { recursive: true });
+    // Fetch job data
+    const jobDataRaw = await redisClient.hGetAll(`job:${jobId}`);
+    const jobData: JobData = {
+      jobId: jobDataRaw.id,
+      type: (jobDataRaw.type || 'TRANSCRIBE') as 'TRANSCRIBE' | 'EMBED_SUBTITLES',
+      videoUrl: jobDataRaw.videoUrl,
+      audioUrl: jobDataRaw.audioUrl,
+      subtitleUrl: jobDataRaw.subtitleUrl,
+      status: jobDataRaw.status,
+      priority: jobDataRaw.priority,
+      createdAt: jobDataRaw.createdAt,
+      retryCount: jobDataRaw.retryCount,
+      error: jobDataRaw.error,
+    };
 
-    await redisClient.hSet(
-      `job:${jobId}`,
-      'status',
-      'processing:downloading_video'
-    );
-    const videoS3Key = await redisClient.hGet(`job:${jobId}`, 'videoUrl');
-    if (!videoS3Key) throw new Error(`No videoUrl found for job ${jobId}`);
+    if (!jobData.videoUrl) {
+      throw new Error(`No videoUrl found for job ${jobId}`);
+    }
 
-    tempVideoPath = path.join(tempDir, path.basename(videoS3Key));
-    tempAudioPath = path.join(tempDir, `${path.parse(videoS3Key).name}.mp3`);
-    tempSrtPath = path.join(tempDir, `${path.parse(videoS3Key).name}.srt`);
+    console.log(`[${jobId}] Processing job of type: ${jobData.type}`);
 
-    console.log(`[${jobId}] Downloading video.`);
-    const getObjectCommand = new GetObjectCommand({
-      Bucket: S3_BUCKET,
-      Key: videoS3Key,
-    });
-    const s3Response = await s3Client.send(getObjectCommand);
-    await pipeline(
-      s3Response.Body as NodeJS.ReadableStream,
-      createWriteStream(tempVideoPath)
-    );
-    console.log(`[${jobId}] Video downloaded to ${tempVideoPath}`);
+    // Get the appropriate processor
+    const processor = processorFactory.getProcessor(jobData.type);
 
-    console.log(`[${jobId}] Extracting audio.`);
-    await redisClient.hSet(
-      `job:${jobId}`,
-      'status',
-      'processing:extracting_audio'
-    );
-    await audioService.extractAudio(tempVideoPath, tempAudioPath);
-    console.log(`[${jobId}] Audio extracted.`);
-
-    console.log(`[${jobId}] Uploading audio.`);
-    const audioS3Key = `${path.parse(videoS3Key).name}.mp3`;
-    await s3Client.send(
-      new PutObjectCommand({
-        Bucket: S3_BUCKET,
-        Key: audioS3Key,
-        Body: await fs.readFile(tempAudioPath),
-        ContentType: 'audio/mpeg',
-      })
-    );
-    await redisClient.hSet(`job:${jobId}`, 'audioUrl', audioS3Key);
-    console.log(`[${jobId}] Audio uploaded.`);
-
+    // Acquire AI lock before processing
     console.log(`[${jobId}] Acquiring AI lock.`);
     await aiLimiter.acquire();
-    console.log(`[${jobId}] AI lock acquired. Transcribing...`);
+    console.log(`[${jobId}] AI lock acquired. Processing...`);
 
-    let transcript: TranscriptSegment[] | null = null;
+    let outputUrl: string;
     try {
-      await redisClient.hSet(
-        `job:${jobId}`,
-        'status',
-        'processing:transcribing_audio'
-      );
-      transcript = await transcriptionService.transcribe(audioS3Key);
-      console.log(`[${jobId}] Transcription finished.`);
+      // Process the job
+      outputUrl = await processor.process(jobData);
+      console.log(`[${jobId}] Processing finished. Output: ${outputUrl}`);
     } finally {
       await aiLimiter.release();
       console.log(`[${jobId}] AI lock released.`);
     }
 
-    console.log(`[${jobId}] Validating transcript.`);
-    if (!transcript || transcript.length === 0) {
-      throw new Error('Transcription service returned no segments.');
-    }
-    console.log(`[${jobId}] Transcript validated.`);
-
-    console.log(`[${jobId}] Formatting SRT.`);
-    const srtContent = formatToSrt(transcript);
-    await fs.writeFile(tempSrtPath, srtContent);
-    console.log(`[${jobId}] SRT formatted.`);
-
-    console.log(`[${jobId}] Uploading SRT.`);
-    const srtS3Key = `${path.parse(videoS3Key).name}.srt`;
-    const srtData = await fs.readFile(tempSrtPath);
-    await s3Client.send(
-      new PutObjectCommand({
-        Bucket: S3_BUCKET,
-        Key: srtS3Key,
-        Body: srtData,
-        ContentType: 'application/x-subrip',
-      })
-    );
-    await redisClient.hSet(`job:${jobId}`, 'subtitleUrl', srtS3Key);
-    console.log(`[${jobId}] SRT uploaded.`);
-
-    await redisClient.hSet(`job:${jobId}`, 'status', 'completed');
+    // Mark as completed
+    await stateService.updateStatus(jobId, 'completed');
     console.log(`[${jobId}] Job fully completed!`);
+    
   } catch (err) {
-    errorMessage = (err as Error).message;
+    const errorMessage = (err as Error).message;
     console.error(`[${jobId}] Processing failed:`, errorMessage);
 
     const retryCount = await redisClient.hIncrBy(`job:${jobId}`, 'retryCount', 1);
@@ -197,12 +132,10 @@ const processJob = async (
         `[${jobId}] Will retry (Attempt ${retryCount}/${MAX_RETRIES}). Backoff: ${backoffDelay}ms`
       );
 
-      await redisClient.hSet(`job:${jobId}`, 'status', 'queued:retry');
+      await stateService.updateStatus(jobId, 'queued:retry');
       await redisClient.hSet(`job:${jobId}`, 'error', errorMessage);
 
-      shouldRetry = true;
-
-      // Schedule retry with backoff
+      // Schedule retry
       setTimeout(async () => {
         try {
           await redisClient.lPush('queue:low', jobId);
@@ -216,25 +149,13 @@ const processJob = async (
         `[${jobId}] Job failed permanently after ${MAX_RETRIES} attempts. Moving to DLQ.`
       );
 
-      await redisClient.hSet(`job:${jobId}`, 'status', 'failed:dlq');
+      await stateService.updateStatus(jobId, 'failed:dlq');
       await redisClient.hSet(`job:${jobId}`, 'error', errorMessage);
-
       await redisClient.rPush('queue:dlq', jobId);
     }
   } finally {
-    console.log(`[${jobId}] Cleaning up.`);
-    
+    console.log(`[${jobId}] Removing from processing set.`);
     await redisClient.sRem('jobs:processing', jobId);
-
-    try {
-      await fs.rm(tempDir, { recursive: true, force: true });
-      console.log(`[${jobId}] Cleaned up temporary directory: ${tempDir}`);
-    } catch (cleanupErr) {
-      console.error(
-        `[${jobId}] Failed to cleanup temp directory:`,
-        cleanupErr
-      );
-    }
   }
 };
 
@@ -253,18 +174,29 @@ const startWorker = async () => {
   );
   await Promise.all([globalLimiter.initialize(), aiLimiter.initialize()]);
 
+  // Instantiate service implementations
+  const storageService = new S3StorageService(s3Client, S3_BUCKET);
+  const stateService = new RedisStateService(redisClient);
+  const fileSystemService = new NodeFileSystemService();
   const audioService: IAudioService = new FfmpegAudioService();
   const transcriptionService: ITranscriptionService = getTranscriptionService(
     s3Client,
     S3_BUCKET
   );
 
+  // Initialize processor factory with all services
+  const processorFactory = new ProcessorFactory(
+    storageService,
+    stateService,
+    fileSystemService,
+    audioService,
+    transcriptionService
+  );
+
   console.log('✅ Worker connected to Redis, waiting for jobs...');
 
   while (true) {
     try {
-      // Acquire global slot BEFORE getting job
-      console.log('[Worker] Waiting for a free global processing slot...');
       await globalLimiter.acquire();
       console.log('[Worker] Global slot acquired. Waiting for job from queue...');
 
@@ -275,27 +207,16 @@ const startWorker = async () => {
         console.log(`[Worker] Found job ${jobId}, starting processing...`);
 
         try {
-          // CRITICAL FIX: AWAIT processJob to ensure proper concurrency
-          await processJob(
-            jobId,
-            audioService,
-            transcriptionService,
-            aiLimiter
-          );
+          await processJob(jobId, processorFactory, stateService, aiLimiter);
         } catch (err) {
-          console.error(
-            `[${jobId}] Unhandled error in processJob:`,
-            err
-          );
+          console.error(`[${jobId}] Unhandled error in processJob:`, err);
         } finally {
-          // CRITICAL FIX: Release global slot AFTER job completes (success or failure)
           await globalLimiter.release();
           console.log(`[Worker] Global slot released for job ${jobId}.`);
         }
       }
     } catch (error) {
       console.error('Worker loop error (Redis connection?):', error);
-      // Release the global lock if we acquired it but failed before processing
       try {
         await globalLimiter.release();
       } catch (releaseErr) {
