@@ -18,7 +18,10 @@ jobs:
       - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2-key.pem
+          # The tr command strips hidden Windows line endings automatically
+          cat << 'EOF' | tr -d '\r' > ~/.ssh/ec2-key.pem
+          ${{ secrets.EC2_SSH_KEY }}
+          EOF
           chmod 600 ~/.ssh/ec2-key.pem
       
       - name: Deploy to EC2
@@ -31,19 +34,17 @@ jobs:
             set -e
             cd ~/subtitle-worker
             
-            echo "📦 Building TypeScript..."
+            echo " Building TypeScript..."
             npx tsc
             
-            echo "🔄 Restarting worker service..."
+            echo " Restarting worker service..."
             sudo systemctl restart subtitle-worker
-            
-            echo "⏳ Waiting for service to start..."
             sleep 3
             
             if sudo systemctl is-active --quiet subtitle-worker; then
-              echo "✅ Worker deployed successfully!"
+              echo " Worker deployed successfully!"
             else
-              echo "❌ Worker failed to start"
+              echo " Worker failed to start"
               sudo journalctl -u subtitle-worker -n 20 --no-pager
               exit 1
             fi
