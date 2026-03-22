@@ -1,99 +1,50 @@
-﻿
-name: Deploy EC2 Worker
+﻿name: Deploy EC2 Worker
 
 on:
-
   push:
-
     branches: [main]
-
     paths:
-
       - 'worker/**'
-
       - '.github/workflows/deploy-worker.yml'
 
 jobs:
-
   deploy:
-
     runs-on: ubuntu-latest
-
     
-
     steps:
-
       - name: Checkout code
-
         uses: actions/checkout@v4
-
       
-
       - name: Setup SSH key
-
         run: |
-
           mkdir -p ~/.ssh
-
           echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2-key.pem
-
           chmod 600 ~/.ssh/ec2-key.pem
-
-          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
-
       
-
       - name: Deploy to EC2
-
         env:
-
           EC2_HOST: ${{ secrets.EC2_HOST }}
-
         run: |
-
-          scp -i ~/.ssh/ec2-key.pem -r ./worker/src ec2-user@${EC2_HOST}:~/subtitle-worker/
-
+          scp -i ~/.ssh/ec2-key.pem -o StrictHostKeyChecking=no -r ./worker/src ec2-user@${EC2_HOST}:~/subtitle-worker/
           
-
-          ssh -i ~/.ssh/ec2-key.pem ec2-user@${EC2_HOST} << 'ENDSSH'
-
+          ssh -i ~/.ssh/ec2-key.pem -o StrictHostKeyChecking=no ec2-user@${EC2_HOST} << 'ENDSSH'
             set -e
-
             cd ~/subtitle-worker
-
             
-
             echo "📦 Building TypeScript..."
-
             npx tsc
-
             
-
-            echo " Restarting worker service..."
-
+            echo "🔄 Restarting worker service..."
             sudo systemctl restart subtitle-worker
-
             
-
-            echo " Waiting for service to start..."
-
+            echo "⏳ Waiting for service to start..."
             sleep 3
-
             
-
             if sudo systemctl is-active --quiet subtitle-worker; then
-
-              echo " Worker deployed successfully!"
-
+              echo "✅ Worker deployed successfully!"
             else
-
-              echo " Worker failed to start"
-
+              echo "❌ Worker failed to start"
               sudo journalctl -u subtitle-worker -n 20 --no-pager
-
               exit 1
-
             fi
-
           ENDSSH
-
