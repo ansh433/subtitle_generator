@@ -155,9 +155,14 @@ app.get('/jobs/:jobId/subtitle', async (req, res) => {
 
 const startServer = async () => {
   await redisClient.connect();
-  app.listen(3000, () => {
-    console.log('API Server is listening on port 3000');
-  });
+  
+  if (process.env.AWS_EXECUTION_ENV === undefined) {
+    app.listen(3000, () => {
+      console.log('API Server is listening on port 3000');
+    });
+  }
 };
 
 startServer();
+
+export default app;
