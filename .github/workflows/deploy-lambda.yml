@@ -1,151 +1,76 @@
-﻿
-name: Deploy Lambda API
+﻿name: Deploy Lambda API
 
 on:
-
   push:
-
     branches: [main]
-
     paths:
-
       - 'api-server/**'
-
       - '.github/workflows/deploy-lambda.yml'
 
 jobs:
-
   deploy:
-
     runs-on: ubuntu-latest
-
     
-
     steps:
-
       - name: Checkout code
-
         uses: actions/checkout@v4
-
       
-
       - name: Configure AWS credentials
-
         uses: aws-actions/configure-aws-credentials@v4
-
         with:
-
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-
           aws-region: ap-south-1
-
       
-
       - name: Setup Node.js
-
         uses: actions/setup-node@v4
-
         with:
-
           node-version: '20'
-
       
-
       - name: Install dependencies
-
         working-directory: ./api-server
-
         run: |
-
           npm install --production
-
           npm install -D typescript @types/node
-
       
-
       - name: Build TypeScript
-
         working-directory: ./api-server
-
         run: npx tsc
-
       
-
       - name: Create lambda handler
-
         working-directory: ./api-server
-
         run: |
-
           cat > lambda.js << 'EOF'
-
           import serverlessExpress from '@vendia/serverless-express';
-
           import express from 'express';
-
           import app from './dist/index.js';
 
           const wrappedApp = express();
-
           wrappedApp.use((req, res, next) => {
-
             if (req.url.startsWith('/prod')) {
-
               req.url = req.url.substring(5);
-
             }
-
             next();
-
           });
-
           wrappedApp.use(app);
 
           export const handler = serverlessExpress({ app: wrappedApp });
-
           EOF
-
       
-
       - name: Install serverless-express
-
         working-directory: ./api-server
-
         run: npm install @vendia/serverless-express
-
       
-
       - name: Create deployment package
-
         working-directory: ./api-server
-
         run: zip -r lambda-deployment.zip node_modules dist lambda.js package.json
-
       
-
       - name: Deploy to Lambda
-
         working-directory: ./api-server
-
-        run: |
-
-          aws lambda update-function-code \
-
-            --function-name subtitle-api \
-
-            --zip-file fileb://lambda-deployment.zip
-
+        run: aws lambda update-function-code --function-name subtitle-api --zip-file fileb://lambda-deployment.zip
       
-
       - name: Wait for update to complete
-
         run: aws lambda wait function-updated --function-name subtitle-api
-
       
-
       - name: Deployment complete
-
-        run: echo " Lambda API deployed successfully!"
-
+        run: echo "✅ Lambda API deployed successfully!"
