@@ -1,0 +1,68 @@
+﻿name: Deploy EC2 Worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'worker/**'
+      - '.github/workflows/deploy-worker.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2-key.pem
+          chmod 600 ~/.ssh/ec2-key.pem
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
+      
+      - name: Deploy to EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          ssh -i ~/.ssh/ec2-key.pem ec2-user@${EC2_HOST} << 'ENDSSH'
+            set -e
+            
+            echo "📦 Pulling latest code..."
+            cd ~/subtitle-worker
+            
+            # Update source code
+            rm -rf src
+            
+            echo "✅ Code updated, building..."
+            
+            # Rebuild TypeScript
+            npx tsc
+            
+            echo "🔄 Restarting worker service..."
+            sudo systemctl restart subtitle-worker
+            
+            echo "⏳ Waiting for service to start..."
+            sleep 3
+            
+            # Check service status
+            sudo systemctl is-active subtitle-worker && echo "✅ Worker deployed successfully!" || echo "❌ Worker failed to start"
+          ENDSSH
+      
+      - name: Upload new code via SCP
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          scp -i ~/.ssh/ec2-key.pem -r ./worker/src ec2-user@${EC2_HOST}:~/subtitle-worker/
+      
+      - name: Rebuild and restart on EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          ssh -i ~/.ssh/ec2-key.pem ec2-user@${EC2_HOST} << 'ENDSSH'
+            cd ~/subtitle-worker
+            npx tsc
+            sudo systemctl restart subtitle-worker
+            echo "✅ Worker restarted"
+          ENDSSH
