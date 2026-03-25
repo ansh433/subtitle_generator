@@ -81,7 +81,7 @@ const processJob = async (
     const jobDataRaw = await redisClient.hGetAll(`job:${jobId}`);
     const jobData: JobData = {
       jobId: jobDataRaw.id,
-      type: (jobDataRaw.type || 'TRANSCRIBE') as 'TRANSCRIBE' | 'EMBED_SUBTITLES',
+      type: (jobDataRaw.type || 'transcribe').toLowerCase() as 'transcribe' | 'embed_subtitles',
       videoUrl: jobDataRaw.videoUrl,
       audioUrl: jobDataRaw.audioUrl,
       subtitleUrl: jobDataRaw.subtitleUrl,

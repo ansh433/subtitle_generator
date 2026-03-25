@@ -5,7 +5,13 @@ FROM node:20-alpine
 
 
 # Install FFmpeg
-RUN apk add --no-cache ffmpeg
+RUN apk update && \
+    apk add --no-cache \
+      ffmpeg \
+      fontconfig \
+      ttf-dejavu \
+      ttf-liberation \
+      font-noto
 
 # Set working directory
 WORKDIR /app

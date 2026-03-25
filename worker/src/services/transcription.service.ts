@@ -1,17 +1,7 @@
-export interface TranscriptSegment {
-  
-  text: string;
-  
-  start: number;
-  
-  end: number;
-}
-
-
 export interface ITranscriptionService {
   /**
    * @param audioIdentifier The S3 key or public URL of the audio file to transcribe.
-   * @returns A Promise that resolves to an array of TranscriptSegment objects.
+   * @returns A Promise that resolves to a fully formatted SRT string.
    */
-  transcribe(audioIdentifier: string): Promise<TranscriptSegment[]>;
+  transcribe(audioIdentifier: string): Promise<string>;
 }

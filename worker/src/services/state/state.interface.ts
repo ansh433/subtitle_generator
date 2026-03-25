@@ -2,7 +2,7 @@
 
 export interface JobCheckpoint {
   audioS3Key?: string;        // S3 key of extracted audio
-  transcriptJson?: string;    // Raw AssemblyAI JSON response
+  transcriptSrt?: string;   // Raw AssemblyAI JSON response
   srtS3Key?: string;          // S3 key of generated SRT file
 }
 

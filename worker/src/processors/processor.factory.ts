@@ -1,7 +1,6 @@
-// worker/src/processors/processor.factory.ts
-
-import { IJobProcessor } from '../interfaces/job-processor.interface.js';
+import { IJobProcessor, JobData } from '../interfaces/job-processor.interface.js';
 import { TranscribeProcessor } from './transcribe.processor.js';
+import { EmbedSubtitlesProcessor } from './embed-subtitles.processor.js';
 import { IStorageService } from '../services/storage/storage.interface.js';
 import { IStateService } from '../services/state/state.interface.js';
 import { IFileSystemService } from '../services/filesystem/filesystem.interface.js';
@@ -10,6 +9,7 @@ import { IAudioService } from '../services/audio.service.js';
 
 export class ProcessorFactory {
   private transcribeProcessor: TranscribeProcessor;
+  private embedSubtitlesProcessor: EmbedSubtitlesProcessor;
 
   constructor(
     storageService: IStorageService,
@@ -18,7 +18,6 @@ export class ProcessorFactory {
     audioService: IAudioService,
     transcriptionService: ITranscriptionService
   ) {
-    // Wire up dependencies
     this.transcribeProcessor = new TranscribeProcessor(
       storageService,
       stateService,
@@ -26,12 +25,33 @@ export class ProcessorFactory {
       audioService,
       transcriptionService
     );
+
+    this.embedSubtitlesProcessor = new EmbedSubtitlesProcessor(
+      storageService,
+      stateService,
+      fileSystemService
+    );
   }
 
   getProcessor(jobType: string): IJobProcessor {
-    switch (jobType) {
-      case 'TRANSCRIBE':
+    const normalizedType = jobType.toLowerCase();
+    
+    switch (normalizedType) {
+      case 'transcribe':
         return this.transcribeProcessor;
+      
+      case 'embed_subtitles':
+        return this.embedSubtitlesProcessor;
+
+      case 'process_video':
+        return {
+          process: async (jobData: JobData) => {
+            const subtitleUrl = await this.transcribeProcessor.process(jobData);
+            jobData.subtitleUrl = subtitleUrl; 
+            const embeddedVideoUrl = await this.embedSubtitlesProcessor.process(jobData);
+            return embeddedVideoUrl; 
+          }
+        };
       
       default:
         throw new Error(`Unknown job type: ${jobType}`);

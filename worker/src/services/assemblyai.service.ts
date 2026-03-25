@@ -1,5 +1,5 @@
 import { AssemblyAI } from 'assemblyai';
-import { ITranscriptionService, TranscriptSegment } from './transcription.service.js';
+import { ITranscriptionService } from './transcription.service.js';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
@@ -31,7 +31,7 @@ export class AssemblyAiService implements ITranscriptionService {
     return getSignedUrl(this.s3Client, command, { expiresIn: 60 });
   }
 
-  async transcribe(audioS3Key: string): Promise<TranscriptSegment[]> {
+  async transcribe(audioS3Key: string): Promise<string> {
     console.log(`[AssemblyAiService] Starting transcription for ${audioS3Key}`);
 
     const audioUrl = await this.getPresignedS3Url(audioS3Key);
@@ -50,23 +50,10 @@ export class AssemblyAiService implements ITranscriptionService {
       throw new Error(`AssemblyAI transcription failed: ${transcript.error}`);
     }
 
-    if (!transcript.words) {
-      console.warn('[AssemblyAiService] No words in transcript, returning empty array.');
-      return [];
-    }
+    // Fetch the perfectly formatted SRT string natively from AssemblyAI (max 32 chars per line)
+    console.log(`[AssemblyAiService] Fetching formatted SRT subtitles for job ${transcript.id}`);
+    const srtText = await this.assemblyClient.transcripts.subtitles(transcript.id, "srt", 32);
 
-    if (transcript.utterances) {
-      return transcript.utterances.map(u => ({
-        text: u.text,
-        start: u.start,
-        end: u.end,
-      }));
-    } else {
-      return [{
-        text: transcript.text || '',
-        start: 0,
-        end: transcript.audio_duration ? transcript.audio_duration * 1000 : 0
-      }];
-    }
+    return srtText;
   }
 }

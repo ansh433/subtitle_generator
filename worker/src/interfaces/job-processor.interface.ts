@@ -2,7 +2,7 @@
 
 export interface JobData {
   jobId: string;
-  type: 'TRANSCRIBE' | 'EMBED_SUBTITLES';
+  type: "transcribe" | "embed_subtitles"; // ✅ Change to lowercase
   videoUrl: string;
   audioUrl?: string;
   subtitleUrl?: string;

@@ -21,8 +21,7 @@ export class FfmpegAudioService implements IAudioService {
   }
 
   async extractAudio(videoPath: string, audioPath: string): Promise<void> {
-    const ffmpegCommand = `ffmpeg -i ${videoPath} -vn -acodec libmp3lame -q:a 2 ${audioPath}`;
-    console.log(`[FfmpegAudioService] Running: ${ffmpegCommand}`);
+    const ffmpegCommand = `ffmpeg -i "${videoPath}" -vn -acodec libmp3lame -q:a 2 "${audioPath}"`;
     await this.runCommand(ffmpegCommand);
     console.log(`[FfmpegAudioService] Audio extracted to ${audioPath}`);
   }
